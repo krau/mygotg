@@ -1,14 +1,15 @@
-package sessionMaker
+package session
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"net"
 	"strconv"
-	"bytes"
+
 	"github.com/go-faster/errors"
-	"github.com/gotd/td/session"
 	"github.com/gotd/td/crypto"
+	"github.com/gotd/td/session"
 )
 
 func DecodeGramjsSession(hx string) (*session.Data, error) {

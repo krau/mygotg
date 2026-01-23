@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/td/session"
+	tdsession "github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/dcs"
@@ -19,7 +19,7 @@ import (
 	intErrors "github.com/krau/mygotg/errors"
 	"github.com/krau/mygotg/ext"
 	"github.com/krau/mygotg/functions"
-	"github.com/krau/mygotg/sessionMaker"
+	"github.com/krau/mygotg/session"
 	"github.com/krau/mygotg/storage"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
@@ -65,8 +65,8 @@ type Client struct {
 	DisableCopyright bool
 	// Logger is instance of zap.Logger. No logs by default.
 	Logger *zap.Logger
-	// Session info of the authenticated user, use sessionMaker.NewSession function to fill this field.
-	sessionStorage session.Storage
+	// Session info of the authenticated user, use session.NewSession function to fill this field.
+	sessionStorage tdsession.Storage
 	// Self contains details of logged in user in the form of *tg.User.
 	Self *tg.User
 	// Code for the language used on the device's OS, ISO 639-1 standard.
@@ -116,8 +116,8 @@ type ClientOpts struct {
 	Resolver dcs.Resolver
 	// Whether to show the copyright line in console or no.
 	DisableCopyright bool
-	// Session info of the authenticated user, use sessionMaker.NewSession function to fill this field.
-	Session sessionMaker.SessionConstructor
+	// Session info of the authenticated user, use session.NewSession function to fill this field.
+	Session session.SessionConstructor
 	// Setting this field to true will lead to automatically fetch the reply_to_message for a new message update.
 	//
 	// Set to `false` by default.
@@ -195,7 +195,7 @@ func NewClient(appId int, apiHash string, cType clientType, opts *ClientOpts) (*
 	}
 	ctx, cancel := context.WithCancel(opts.Context)
 
-	peerStorage, sessionStorage, err := sessionMaker.NewSessionStorage(ctx, opts.Session, opts.InMemory)
+	peerStorage, sessionStorage, err := session.NewSessionStorage(ctx, opts.Session, opts.InMemory)
 	if err != nil {
 		cancel()
 		return nil, err

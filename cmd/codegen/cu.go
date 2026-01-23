@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/krau/mygotg/generator/parser"
+	"github.com/krau/mygotg/cmd/codegen/parser"
 )
 
 var helperFuncsCUTempl = template.Must(template.New("cuHelpers").Parse(helperFuncsCU))
