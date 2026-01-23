@@ -1,3 +1,3 @@
 # mygotg
 
-hard fork of mygotg.
+hard fork of gotgproto
