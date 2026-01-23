@@ -23,7 +23,7 @@ func NewSessionStorage(ctx context.Context, sessionType SessionConstructor, inMe
 		}, nil
 	}
 	if name.(sessionNameString) == "" {
-		name = sessionNameString("gotgproto")
+		name = sessionNameString("mygotg")
 	}
 	peerStorage := storage.NewPeerStorage(sqlite.Open(fmt.Sprintf("%s.session", name)), inMemory)
 	if inMemory {

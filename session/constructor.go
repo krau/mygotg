@@ -38,7 +38,7 @@ func SimpleSession() *SimpleSessionConstructor {
 }
 
 func (*SimpleSessionConstructor) loadSession() (sessionName, []byte, error) {
-	return sessionNameString("gotgproto_simple"), nil, nil
+	return sessionNameString("mygotg_simple"), nil, nil
 }
 
 type SqlSessionConstructor struct {

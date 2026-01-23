@@ -737,7 +737,7 @@ func (ctx *Context) GetUserProfilePhotos(userId int64, opts *tg.PhotosGetUserPho
 }
 
 // ExportSessionString returns session of authorized account in the form of string.
-// Note: This session string can be used to log back in with the help of gotgproto.
+// Note: This session string can be used to log back in with the help of mygotg.
 // Check session.SessionType for more information about it.
 func (ctx *Context) ExportSessionString() (string, error) {
 	return functions.EncodeSessionToString(ctx.PeerStorage.GetSession())

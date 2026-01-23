@@ -1,4 +1,4 @@
-package gotgproto
+package mygotg
 
 //go:generate go run ./generator
 
@@ -151,7 +151,7 @@ type ClientOpts struct {
 	// Note: This context will be used for the entire lifecycle of the client.
 	Context context.Context
 	// AuthConversator is the interface for the authenticator.
-	// gotgproto.BasicConversator is used by default.
+	// mygotg.BasicConversator is used by default.
 	AuthConversator AuthConversator
 	// MigrationTimeout configures migration timeout.
 	MigrationTimeout time.Duration
@@ -181,7 +181,7 @@ type ClientOpts struct {
 	SendCodeOptions *auth.SendCodeOptions
 }
 
-// NewClient creates a new gotgproto client and logs in to telegram.
+// NewClient creates a new mygotg client and logs in to telegram.
 func NewClient(appId int, apiHash string, cType clientType, opts *ClientOpts) (*Client, error) {
 	if opts == nil {
 		opts = &ClientOpts{
@@ -251,7 +251,7 @@ func (c *Client) initTelegramClient(
 ) {
 	if device == nil {
 		device = &telegram.DeviceConfig{
-			DeviceModel:    "GoTGProto",
+			DeviceModel:    "mygotg",
 			SystemVersion:  runtime.GOOS,
 			AppVersion:     VERSION,
 			SystemLangCode: c.SystemLangCode,
@@ -315,7 +315,7 @@ func (c *Client) login() error {
 func (ch *Client) printCredit() {
 	if !ch.DisableCopyright {
 		fmt.Printf(`
-GoTGProto %s, Copyright (C) 2024 Anony <github.com/celestix>
+mygotg %s, Copyright (C) 2024 Anony <github.com/celestix>
 Licensed under the terms of GNU General Public License v3
 
 `, VERSION)

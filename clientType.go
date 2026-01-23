@@ -1,4 +1,4 @@
-package gotgproto
+package mygotg
 
 const (
 	clientTypeVPhone int = iota
