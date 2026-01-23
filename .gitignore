@@ -1,0 +1,8 @@
+*.exe
+*.session
+examples/**/*.session
+test/
+.idea/
+vendor/
+go.work
+go.work.sum
