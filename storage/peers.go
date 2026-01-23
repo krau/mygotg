@@ -4,6 +4,8 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// [TODO] bot api style peer id
+// https://core.telegram.org/type/Peer
 type Peer struct {
 	ID         int64 `gorm:"primary_key"`
 	AccessHash int64
