@@ -11,8 +11,8 @@ import (
 )
 
 type PeerStorage struct {
-	peerCache  *cacher.Cacher[int64, *Peer]
-	peerLock   *sync.RWMutex
+	peerCache  *cacher.Cacher[PeerKey, *Peer]
+	peerLock   sync.RWMutex
 	inMemory   bool
 	SqlSession *gorm.DB
 }
@@ -20,7 +20,6 @@ type PeerStorage struct {
 func NewPeerStorage(dialector gorm.Dialector, inMemory bool) *PeerStorage {
 	p := PeerStorage{
 		inMemory: inMemory,
-		peerLock: new(sync.RWMutex),
 	}
 	var opts *cacher.NewCacherOpts
 	if inMemory {
@@ -41,8 +40,10 @@ func NewPeerStorage(dialector gorm.Dialector, inMemory bool) *PeerStorage {
 		p.SqlSession = db
 		dB, _ := db.DB()
 		dB.SetMaxOpenConns(100)
-		_ = p.SqlSession.AutoMigrate(&Session{}, &Peer{})
+		if err := p.SqlSession.AutoMigrate(&Session{}, &Peer{}); err != nil {
+			log.Panicln(err)
+		}
 	}
-	p.peerCache = cacher.NewCacher[int64, *Peer](opts)
+	p.peerCache = cacher.NewCacher[PeerKey, *Peer](opts)
 	return &p
 }

@@ -7,11 +7,17 @@ import (
 // [TODO] bot api style peer id
 // https://core.telegram.org/type/Peer
 type Peer struct {
-	ID         int64 `gorm:"primary_key"`
+	ID         int64 `gorm:"primaryKey"`
 	AccessHash int64
-	Type       int
+	Type       int `gorm:"primaryKey"`
 	Username   string
 }
+
+type PeerKey struct {
+	ID   int64
+	Type int
+}
+
 type EntityType int
 
 func (e EntityType) GetInt() int {
@@ -32,7 +38,8 @@ const (
 
 func (p *PeerStorage) AddPeer(iD, accessHash int64, peerType EntityType, userName string) {
 	peer := &Peer{ID: iD, AccessHash: accessHash, Type: peerType.GetInt(), Username: userName}
-	p.peerCache.Set(iD, peer)
+	key := PeerKey{ID: iD, Type: peer.Type}
+	p.peerCache.Set(key, peer)
 	if p.inMemory {
 		return
 	}
@@ -49,15 +56,32 @@ func (p *PeerStorage) addPeerToDb(peer *Peer) {
 
 // GetPeerById finds the provided id in the peer storage and return it if found.
 func (p *PeerStorage) GetPeerById(iD int64) *Peer {
-	peer, ok := p.peerCache.Get(iD)
+	peer, ok := p.getCachedPeerByID(iD)
 	if p.inMemory {
 		if !ok {
 			return &Peer{}
 		}
 	} else {
 		if !ok {
-			return p.cachePeers(iD)
+			return p.cachePeersByID(iD)
 		}
+	}
+	return peer
+}
+
+// GetPeerByIdAndType finds the provided id and type in the peer storage and returns it if found.
+func (p *PeerStorage) GetPeerByIdAndType(iD int64, peerType EntityType) *Peer {
+	key := PeerKey{ID: iD, Type: peerType.GetInt()}
+	peer, ok := p.peerCache.Get(key)
+	if p.inMemory {
+		if !ok {
+			return &Peer{}
+		}
+		return peer
+	}
+	if !ok {
+		peer, _ := p.cachePeerByIDType(iD, peerType)
+		return peer
 	}
 	return peer
 }
@@ -88,11 +112,39 @@ func (p *PeerStorage) GetInputPeerByUsername(userName string) tg.InputPeerClass 
 	return getInputPeerFromStoragePeer(p.GetPeerByUsername(userName))
 }
 
-func (p *PeerStorage) cachePeers(id int64) *Peer {
-	var peer = Peer{}
-	p.SqlSession.Where("id = ?", id).Find(&peer)
-	p.peerCache.Set(id, &peer)
-	return &peer
+func (p *PeerStorage) cachePeersByID(id int64) *Peer {
+	for _, peerType := range peerTypeLookupOrder() {
+		peer, ok := p.cachePeerByIDType(id, peerType)
+		if ok {
+			return peer
+		}
+	}
+	return &Peer{}
+}
+
+func (p *PeerStorage) cachePeerByIDType(id int64, peerType EntityType) (*Peer, bool) {
+	var peer Peer
+	result := p.SqlSession.Where("id = ? AND type = ?", id, peerType.GetInt()).First(&peer)
+	if result.Error != nil || result.RowsAffected == 0 {
+		return &Peer{}, false
+	}
+	key := PeerKey{ID: peer.ID, Type: peer.Type}
+	p.peerCache.Set(key, &peer)
+	return &peer, true
+}
+
+func (p *PeerStorage) getCachedPeerByID(id int64) (*Peer, bool) {
+	for _, peerType := range peerTypeLookupOrder() {
+		peer, ok := p.peerCache.Get(PeerKey{ID: id, Type: peerType.GetInt()})
+		if ok {
+			return peer, true
+		}
+	}
+	return nil, false
+}
+
+func peerTypeLookupOrder() []EntityType {
+	return []EntityType{TypeChannel, TypeUser, TypeChat}
 }
 
 func getInputPeerFromStoragePeer(peer *Peer) tg.InputPeerClass {
