@@ -9,8 +9,7 @@ import (
 	"github.com/krau/mygotg/storage"
 )
 
-// SessionStorage implements SessionStorage for file system as file
-// stored in Path.
+// SessionStorage keeps a session snapshot backed by peer storage.
 type SessionStorage struct {
 	data        []byte
 	peerStorage *storage.PeerStorage
@@ -22,7 +21,7 @@ type jsonData struct {
 	Data    session.Data
 }
 
-// LoadSession loads session from file.
+// LoadSession returns a copy of the current session snapshot.
 func (f *SessionStorage) LoadSession(_ context.Context) ([]byte, error) {
 	if f == nil {
 		return nil, errors.New("nil session storage is invalid")
@@ -34,7 +33,7 @@ func (f *SessionStorage) LoadSession(_ context.Context) ([]byte, error) {
 	return append([]byte(nil), f.data...), nil
 }
 
-// StoreSession stores session to sqlite storage.
+// StoreSession copies data into the current snapshot and peer storage.
 func (f *SessionStorage) StoreSession(_ context.Context, data []byte) error {
 	if f == nil {
 		return errors.New("nil session storage is invalid")
@@ -42,9 +41,10 @@ func (f *SessionStorage) StoreSession(_ context.Context, data []byte) error {
 	f.mux.Lock()
 	defer f.mux.Unlock()
 
+	f.data = append([]byte(nil), data...)
 	f.peerStorage.UpdateSession(&storage.Session{
 		Version: storage.LatestVersion,
-		Data:    append([]byte(nil), data...),
+		Data:    f.data,
 	})
 	return nil
 }
