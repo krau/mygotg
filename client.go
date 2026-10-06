@@ -38,6 +38,11 @@ type Client struct {
 	// Dispatcher off the connection's read goroutine. It is nil when updates
 	// are disabled or recovery is turned off.
 	updateManager *updates.Manager
+	// deferUpdateRecovery delays starting the manager until the app calls
+	// StartUpdateRecovery, so it can register its handlers first.
+	deferUpdateRecovery   bool
+	updateRecoveryMu      sync.Mutex
+	updateRecoveryStarted bool
 	// PublicKeys of telegram.
 	//
 	// If not provided, embedded public keys will be used.
@@ -159,6 +164,11 @@ type ClientOpts struct {
 	// or an updatesTooLong is lost, which is the historic reason a long-running
 	// client silently stops responding. Only enable this for debugging.
 	DisableUpdateRecovery bool
+	// DeferUpdateRecovery delays the start of update recovery until the app
+	// calls Client.StartUpdateRecovery. Use it when handlers are registered
+	// after the client is created: until then updates are neither delivered
+	// nor recovered, and the persisted cursor does not move.
+	DeferUpdateRecovery bool
 	// Custom Run() Middleware
 	// Can be used for floodWaiter package
 	// https://github.com/krau/mygotg/blob/beta/examples/middleware/main.go#L41
@@ -398,15 +408,14 @@ func (c *Client) initialize(notifyStarted func()) func(ctx context.Context) erro
 		// buffers updates on a separate worker instead of executing handlers on
 		// the connection's read goroutine, and resynchronizes via
 		// updates.getDifference after a gap.
-		if c.updateManager != nil {
-			go func() {
-				err := c.updateManager.Run(ctx, c.API(), self.ID, updates.AuthOptions{
-					IsBot: c.clientType.getType() != clientTypeVPhone,
-				})
-				if err != nil && ctx.Err() == nil && c.Logger != nil {
-					c.Logger.Error("Update manager stopped", zap.Error(err))
-				}
-			}()
+		//
+		// When recovery is deferred the app starts it with StartUpdateRecovery,
+		// after its handlers are registered: recovered updates are dispatched to
+		// the same handlers, so starting earlier would hand them to a dispatcher
+		// with no consumers while still advancing the persisted cursor.
+		if c.updateManager != nil && !c.deferUpdateRecovery {
+			c.updateRecoveryStarted = true
+			c.runUpdateRecovery(ctx, self.ID)
 		}
 
 		c.PeerStorage.AddPeer(self.ID, self.AccessHash, storage.TypeUser, self.Username)
@@ -415,6 +424,44 @@ func (c *Client) initialize(notifyStarted func()) func(ctx context.Context) erro
 		<-c.ctx.Done()
 		return c.ctx.Err()
 	}
+}
+
+// runUpdateRecovery starts the update manager in the background. The caller is
+// responsible for having set updateRecoveryStarted.
+func (c *Client) runUpdateRecovery(ctx context.Context, userID int64) {
+	go func() {
+		err := c.updateManager.Run(ctx, c.API(), userID, updates.AuthOptions{
+			IsBot: c.clientType.getType() != clientTypeVPhone,
+		})
+		if err != nil && ctx.Err() == nil && c.Logger != nil {
+			c.Logger.Error("Update manager stopped", zap.Error(err))
+		}
+	}()
+}
+
+// StartUpdateRecovery starts the update manager: gap recovery and delivery of
+// updates to Dispatcher.
+//
+// It only has to be called when ClientOpts.DeferUpdateRecovery is set, for apps
+// that register their handlers after the client is created; until it is called
+// updates are neither delivered nor recovered, and the persisted cursor does
+// not move. It returns an error when the client is not ready, recovery is
+// disabled, or it was already started.
+func (c *Client) StartUpdateRecovery(ctx context.Context) error {
+	c.updateRecoveryMu.Lock()
+	defer c.updateRecoveryMu.Unlock()
+	if c.Self == nil {
+		return intErrors.ErrClientNotReady
+	}
+	if c.updateManager == nil {
+		return intErrors.ErrUpdateRecoveryOff
+	}
+	if c.updateRecoveryStarted {
+		return intErrors.ErrUpdateRecoveryStarted
+	}
+	c.updateRecoveryStarted = true
+	c.runUpdateRecovery(ctx, c.Self.ID)
+	return nil
 }
 
 // ExportStringSession EncodeSessionToString encodes the client session to a string in base64.
@@ -482,6 +529,8 @@ func (c *Client) Start(opts *ClientOpts) error {
 	}
 
 	c.updateManager = nil
+	c.updateRecoveryStarted = false
+	c.deferUpdateRecovery = opts.DeferUpdateRecovery
 	if !opts.NoUpdates && !opts.DisableUpdateRecovery {
 		c.updateManager = updates.New(updates.Config{
 			Handler: c.Dispatcher,
