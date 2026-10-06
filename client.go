@@ -296,7 +296,6 @@ func (c *Client) initTelegramClient(
 			LangCode:       c.ClientLangCode,
 		}
 	}
-
 	c.Client = telegram.NewClient(c.appId, c.apiHash, telegram.Options{
 		DCList:            c.DCList,
 		Resolver:          c.Resolver,
