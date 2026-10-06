@@ -635,7 +635,8 @@ func (ctx *Context) ForwardMessages(fromChatId, toChatId int64, request *tg.Mess
 
 type EditAdminOpts struct {
 	AdminRights tg.ChatAdminRights
-	AdminTitle  string
+	// AdminTitle replaces the custom administrator title in channels or supergroups; empty clears it.
+	AdminTitle string
 }
 
 // PromoteChatMember is used to promote a user in a chat.

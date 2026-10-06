@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/log"
+	gotdlog "github.com/gotd/log"
 	"github.com/gotd/log/logzap"
 	tdsession "github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
@@ -276,6 +276,13 @@ func (c *Client) updateHandler() telegram.UpdateHandler {
 	return c.Dispatcher
 }
 
+func gotdLogger(logger *zap.Logger) gotdlog.Logger {
+	if logger == nil {
+		return nil
+	}
+	return logzap.New(logger)
+}
+
 func (c *Client) initTelegramClient(
 	device *telegram.DeviceConfig,
 	middlewares []telegram.Middleware,
@@ -288,11 +295,6 @@ func (c *Client) initTelegramClient(
 			SystemLangCode: c.SystemLangCode,
 			LangCode:       c.ClientLangCode,
 		}
-	}
-
-	var gotdLogger log.Logger
-	if c.Logger != nil {
-		gotdLogger = logzap.New(c.Logger)
 	}
 
 	c.Client = telegram.NewClient(c.appId, c.apiHash, telegram.Options{
@@ -311,7 +313,7 @@ func (c *Client) initTelegramClient(
 		UpdateHandler:     c.updateHandler(),
 		NoUpdates:         c.NoUpdates,
 		SessionStorage:    c.sessionStorage,
-		Logger:            gotdLogger,
+		Logger:            gotdLogger(c.Logger),
 		Device:            *device,
 		Middlewares:       middlewares,
 	})
@@ -467,7 +469,7 @@ func (c *Client) Start(opts *ClientOpts) error {
 		c.updateManager = updates.New(updates.Config{
 			Handler: c.Dispatcher,
 			Storage: opts.UpdateStateStorage,
-			Logger:  opts.Logger,
+			Logger:  gotdLogger(opts.Logger),
 		})
 	}
 	c.initTelegramClient(opts.Device, opts.Middlewares)

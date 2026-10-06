@@ -142,7 +142,7 @@ func UnbanChatMember(context context.Context, client *tg.Client, chatPeer *tg.In
 func PromoteChatMember(ctx context.Context, client *tg.Client, chat, user *storage.Peer, rights tg.ChatAdminRights, title string) (bool, error) {
 	rights.Other = true
 	if chat.AccessHash != 0 {
-		_, err := client.ChannelsEditAdmin(ctx, &tg.ChannelsEditAdminRequest{
+		request := &tg.ChannelsEditAdminRequest{
 			Channel: &tg.InputChannel{
 				ChannelID:  chat.ID,
 				AccessHash: chat.AccessHash,
@@ -152,8 +152,9 @@ func PromoteChatMember(ctx context.Context, client *tg.Client, chat, user *stora
 				AccessHash: user.AccessHash,
 			},
 			AdminRights: rights,
-			Rank:        title,
-		})
+		}
+		request.SetRank(title)
+		_, err := client.ChannelsEditAdmin(ctx, request)
 		return err == nil, err
 	} else {
 		_, err := client.MessagesEditChatAdmin(ctx, &tg.MessagesEditChatAdminRequest{
@@ -171,7 +172,7 @@ func PromoteChatMember(ctx context.Context, client *tg.Client, chat, user *stora
 func DemoteChatMember(ctx context.Context, client *tg.Client, chat, user *storage.Peer, rights tg.ChatAdminRights, title string) (bool, error) {
 	rights.Other = false
 	if chat.AccessHash != 0 {
-		_, err := client.ChannelsEditAdmin(ctx, &tg.ChannelsEditAdminRequest{
+		request := &tg.ChannelsEditAdminRequest{
 			Channel: &tg.InputChannel{
 				ChannelID:  chat.ID,
 				AccessHash: chat.AccessHash,
@@ -181,8 +182,9 @@ func DemoteChatMember(ctx context.Context, client *tg.Client, chat, user *storag
 				AccessHash: user.AccessHash,
 			},
 			AdminRights: rights,
-			Rank:        title,
-		})
+		}
+		request.SetRank(title)
+		_, err := client.ChannelsEditAdmin(ctx, request)
 		return err == nil, err
 	} else {
 		_, err := client.MessagesEditChatAdmin(ctx, &tg.MessagesEditChatAdminRequest{
