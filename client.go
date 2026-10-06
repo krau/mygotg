@@ -486,7 +486,12 @@ func (c *Client) Start(opts *ClientOpts) error {
 		c.updateManager = updates.New(updates.Config{
 			Handler: c.Dispatcher,
 			Storage: opts.UpdateStateStorage,
-			Logger:  gotdLogger(opts.Logger),
+			// Keep the access hashes the manager learns in the persistent peer
+			// storage; otherwise it uses an in-memory hasher and cannot resolve
+			// known channels after a restart, silently skipping their gaps.
+			AccessHasher:     storage.NewAccessHasher(c.PeerStorage),
+			UserAccessHasher: storage.NewAccessHasher(c.PeerStorage),
+			Logger:           gotdLogger(opts.Logger),
 		})
 	}
 	c.initTelegramClient(opts.Device, opts.Middlewares)
