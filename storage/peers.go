@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"context"
+
+	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
 )
 
@@ -52,6 +55,19 @@ func (p *PeerStorage) addPeerToDb(peer *Peer) {
 	p.peerLock.Lock()
 	defer p.peerLock.Unlock()
 	tx.Commit()
+}
+
+func (p *PeerStorage) savePreloadedPeer(ctx context.Context, peer *Peer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !p.inMemory {
+		if err := p.SqlSession.WithContext(ctx).Save(peer).Error; err != nil {
+			return err
+		}
+	}
+	p.peerCache.Set(PeerKey{ID: peer.ID, Type: peer.Type}, peer)
+	return nil
 }
 
 // GetPeerById finds the provided id in the peer storage and return it if found.
@@ -166,4 +182,64 @@ func getInputPeerFromStoragePeer(peer *Peer) tg.InputPeerClass {
 	default:
 		return &tg.InputPeerEmpty{}
 	}
+}
+
+// AddPeersFromDialogs preloads user-account peers, skipping min users/channels.
+// It waits for persistence and returns RPC, cancellation, or storage errors.
+func AddPeersFromDialogs(ctx context.Context, raw *tg.Client, peerStorage *PeerStorage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	const batchSize = 100
+	query := dialogs.NewQueryBuilder(raw).GetDialogs()
+	// gotd's iterator otherwise requests again after exhausting a final page.
+	finalPageRemaining := -1
+	iter := dialogs.NewIterator(dialogs.QueryFunc(func(ctx context.Context, req dialogs.Request) (tg.MessagesDialogsClass, error) {
+		result, err := query.Query(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if page, ok := result.(*tg.MessagesDialogs); ok {
+			finalPageRemaining = len(page.Dialogs)
+		}
+		// Persist the page once; each iterator element shares its entities.
+		if page, ok := result.AsModified(); ok {
+			for _, user := range page.GetUsers() {
+				if user, ok := user.AsNotEmpty(); ok && !user.Min {
+					if err := peerStorage.savePreloadedPeer(ctx, &Peer{ID: user.ID, AccessHash: user.AccessHash, Type: TypeUser.GetInt(), Username: user.Username}); err != nil {
+						return nil, err
+					}
+				}
+			}
+			for _, chat := range page.GetChats() {
+				var peer *Peer
+				switch chat := chat.(type) {
+				case *tg.Channel:
+					if !chat.Min {
+						peer = &Peer{ID: chat.ID, AccessHash: chat.AccessHash, Type: TypeChannel.GetInt(), Username: chat.Username}
+					}
+				case *tg.Chat:
+					peer = &Peer{ID: chat.ID, Type: TypeChat.GetInt()}
+				}
+				if peer != nil {
+					if err := peerStorage.savePreloadedPeer(ctx, peer); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		return result, nil
+	}), batchSize)
+	for iter.Next(ctx) {
+		if finalPageRemaining > 0 {
+			finalPageRemaining--
+			if finalPageRemaining == 0 {
+				break
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }

@@ -5,6 +5,7 @@ package mygotg
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 	"time"
@@ -140,7 +141,8 @@ type ClientOpts struct {
 	Device *telegram.DeviceConfig
 	// Panic handles all the panics that occur during handler execution.
 	PanicHandler dispatcher.PanicHandler
-	// Error handles all the unknown errors which are returned by the handler callback functions.
+	// ErrorHandler handles unknown callback errors and background peer-preload failures (with a nil update).
+	// Returning dispatcher.StopClient cancels the client.
 	ErrorHandler dispatcher.ErrorHandler
 	// Custom Middlewares
 	Middlewares []telegram.Middleware
@@ -196,6 +198,10 @@ type ClientOpts struct {
 	NoUpdates bool
 	// SendCodeOptions allows overriding AuthSendCode behavior.
 	SendCodeOptions *auth.SendCodeOptions
+	// PeersFromDialogs preloads user-account dialogs; background failures use ErrorHandler or logging.
+	PeersFromDialogs bool
+	// WaitOnPeersFromDialogs waits for persistence; failure cancels startup and is returned to the caller.
+	WaitOnPeersFromDialogs bool
 }
 
 // NewClient creates a new mygotg client and logs in to telegram.
@@ -364,7 +370,7 @@ Licensed under the terms of GNU General Public License v3
 	}
 }
 
-func (c *Client) initialize(wg *sync.WaitGroup) func(ctx context.Context) error {
+func (c *Client) initialize(notifyStarted func()) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		err := c.login()
 		if err != nil {
@@ -395,9 +401,8 @@ func (c *Client) initialize(wg *sync.WaitGroup) func(ctx context.Context) error 
 		}
 
 		c.PeerStorage.AddPeer(self.ID, self.AccessHash, storage.TypeUser, self.Username)
-		// notify channel that client is up
-		wg.Done()
 		c.running = true
+		notifyStarted()
 		<-c.ctx.Done()
 		return c.ctx.Err()
 	}
@@ -458,7 +463,7 @@ func (c *Client) Stop() {
 }
 
 // Start connects the client to telegram servers and logins.
-// It will return error if the client is already running.
+// It returns an error if already running or a synchronous peer preload fails; a failed preload stops the client.
 func (c *Client) Start(opts *ClientOpts) error {
 	if c.running {
 		return intErrors.ErrClientAlreadyRunning
@@ -478,25 +483,59 @@ func (c *Client) Start(opts *ClientOpts) error {
 	c.initTelegramClient(opts.Device, opts.Middlewares)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
+	started := sync.Once{}
+	notifyStarted := func() { started.Do(wg.Done) }
 	go func(c *Client) {
 		if opts.RunMiddleware == nil {
-			c.err = c.Run(c.ctx, c.initialize(&wg))
+			c.err = c.Run(c.ctx, c.initialize(notifyStarted))
 		} else {
 			c.err = opts.RunMiddleware(
 				c.Run,
 				c.ctx,
-				c.initialize(&wg),
+				c.initialize(notifyStarted),
 			)
 		}
 
 		if c.err != nil {
-			wg.Done()
+			notifyStarted()
 		}
 	}(c)
 
 	// wait till client starts
 	wg.Wait()
+	if c.err == nil {
+		if !c.Self.Bot && opts.PeersFromDialogs {
+			if opts.WaitOnPeersFromDialogs {
+				if err := storage.AddPeersFromDialogs(c.ctx, c.API(), c.PeerStorage); err != nil {
+					c.Stop()
+					return errors.Wrap(err, "preload peers from dialogs")
+				}
+			} else {
+				go func() {
+					if err := storage.AddPeersFromDialogs(c.ctx, c.API(), c.PeerStorage); err != nil {
+						c.handlePeerPreloadError(opts, err)
+					}
+				}()
+			}
+		}
+	}
 	return c.err
+}
+
+func (c *Client) handlePeerPreloadError(opts *ClientOpts, err error) {
+	if errors.Is(err, context.Canceled) && c.ctx.Err() != nil {
+		return
+	}
+	err = errors.Wrap(err, "preload peers from dialogs")
+	if opts.ErrorHandler != nil {
+		if errors.Is(opts.ErrorHandler(c.CreateContext(), nil, err.Error()), dispatcher.StopClient) {
+			c.Stop()
+		}
+	} else if c.Logger != nil {
+		c.Logger.Error("preload peers from dialogs", zap.Error(err))
+	} else {
+		log.Println(err)
+	}
 }
 
 // RefreshContext casts the new context.Context and telegram session
