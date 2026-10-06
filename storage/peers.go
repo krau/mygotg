@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"context"
+
+	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
 )
 
@@ -166,4 +169,21 @@ func getInputPeerFromStoragePeer(peer *Peer) tg.InputPeerClass {
 	default:
 		return &tg.InputPeerEmpty{}
 	}
+}
+
+// AddPeersFromDialogs fetches the account dialogs and adds every entity (users,
+// chats and channels) to the peer storage. Only usable by user accounts.
+func AddPeersFromDialogs(ctx context.Context, raw *tg.Client, peerStorage *PeerStorage) {
+	_ = dialogs.NewQueryBuilder(raw).GetDialogs().ForEach(ctx, func(ctx context.Context, e dialogs.Elem) error {
+		for cid, channel := range e.Entities.Channels() {
+			peerStorage.AddPeer(cid, channel.AccessHash, TypeChannel, channel.Username)
+		}
+		for uid, user := range e.Entities.Users() {
+			peerStorage.AddPeer(uid, user.AccessHash, TypeUser, user.Username)
+		}
+		for gid := range e.Entities.Chats() {
+			peerStorage.AddPeer(gid, DefaultAccessHash, TypeChat, DefaultUsername)
+		}
+		return nil
+	})
 }
