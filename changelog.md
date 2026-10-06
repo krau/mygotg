@@ -3,25 +3,34 @@
 mygotg is derived from [gotgproto](https://github.com/celestix/gotgproto); the history up to
 the fork lives in gotgproto's changelog. This file tracks changes made in this repository.
 
-## Unreleased
+## v0.3.0 - 2026-10-06
 
 ### Added
 
-- `ClientOpts.UpdateStateStorage` and missed-update recovery through gotd's `telegram/updates`
-  manager, instead of running handlers on the MTProto read goroutine and dropping gaps.
-- reCAPTCHA solver support: the `RecaptchaSolver` interface and the `FlowClient` wrapper that
-  retries `auth.sendCode` through `invokeWithReCaptcha`; `AuthStatus.SentCodeType` now reports
-  the code delivery method chosen by Telegram.
-- `ClientOpts.PeersFromDialogs` / `WaitOnPeersFromDialogs` to seed the peer storage from the
-  account dialogs on startup.
+- Missed-update recovery, with optional persistence through `ClientOpts.UpdateStateStorage`.
+- reCAPTCHA support through `RecaptchaSolver`, and code delivery information in
+  `AuthStatus.SentCodeType`.
+- Startup peer preloading through `ClientOpts.PeersFromDialogs` and
+  `WaitOnPeersFromDialogs`.
+- golangci-lint v2 configuration and a repository changelog.
 
 ### Fixed
 
-- session: `StoreSession` keeps the in-memory snapshot in sync and copies the session bytes on
-  read and write, so `ExportStringSession` no longer returns a stale session.
-- `userclient/plugin` (btts side): see the corresponding repository.
+- Session exports reflect the latest stored session; caller buffer changes cannot alter it.
+- Peer preloading preserves complete users and channels, reports failures, and makes
+  persisted peers available before a waiting startup returns.
+- Failed peer preloading can stop startup without a duplicate completion notification.
+- Empty administrator titles continue to clear existing titles after the gotd upgrade.
 
-## v1.0.0-beta21
+### Changed
 
-- Peer storage reworked to a combined primary key, with a SQLite migration for existing
-  databases.
+- Updated `github.com/gotd/td` to v0.159.0.
+- The reported client version now matches this repository's release tag.
+
+## v0.2.1 - 2026-02-11
+
+- Added SQLite migration for existing peer databases with a single-column primary key.
+
+## v0.2.0 - 2026-02-11
+
+- Changed peer storage to use a combined ID and entity-type primary key.
