@@ -9,12 +9,9 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-// RecaptchaSolver is implemented by an AuthConversator that is able to solve a
-// Telegram reCAPTCHA challenge. When the assigned conversator implements this
-// interface, the phone login flow wraps the auth client in a FlowClient so that
-// a RECAPTCHA_CHECK_... error raised by auth.sendCode is solved and retried via
-// auth.sendCode invoked with invokeWithReCaptcha.
+// RecaptchaSolver enables phone-login challenge retries when implemented by an AuthConversator.
 type RecaptchaSolver interface {
+	// SolveRecaptcha receives the action and key without their separating "__".
 	SolveRecaptcha(packageID, action, key string) (string, error)
 }
 
@@ -32,7 +29,7 @@ func parseRecaptcha(text string) (string, string) {
 	if sep == -1 {
 		return "", ""
 	}
-	action := payload[:sep+1]
+	action := payload[:sep]
 	key := payload[sep+2:]
 	if action == "" || key == "" {
 		return "", ""
