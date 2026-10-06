@@ -57,6 +57,19 @@ func (p *PeerStorage) addPeerToDb(peer *Peer) {
 	tx.Commit()
 }
 
+func (p *PeerStorage) savePreloadedPeer(ctx context.Context, peer *Peer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !p.inMemory {
+		if err := p.SqlSession.WithContext(ctx).Save(peer).Error; err != nil {
+			return err
+		}
+	}
+	p.peerCache.Set(PeerKey{ID: peer.ID, Type: peer.Type}, peer)
+	return nil
+}
+
 // GetPeerById finds the provided id in the peer storage and return it if found.
 func (p *PeerStorage) GetPeerById(iD int64) *Peer {
 	peer, ok := p.getCachedPeerByID(iD)
@@ -171,19 +184,62 @@ func getInputPeerFromStoragePeer(peer *Peer) tg.InputPeerClass {
 	}
 }
 
-// AddPeersFromDialogs fetches the account dialogs and adds every entity (users,
-// chats and channels) to the peer storage. Only usable by user accounts.
-func AddPeersFromDialogs(ctx context.Context, raw *tg.Client, peerStorage *PeerStorage) {
-	_ = dialogs.NewQueryBuilder(raw).GetDialogs().ForEach(ctx, func(ctx context.Context, e dialogs.Elem) error {
-		for cid, channel := range e.Entities.Channels() {
-			peerStorage.AddPeer(cid, channel.AccessHash, TypeChannel, channel.Username)
+// AddPeersFromDialogs preloads user-account peers, skipping min users/channels.
+// It waits for persistence and returns RPC, cancellation, or storage errors.
+func AddPeersFromDialogs(ctx context.Context, raw *tg.Client, peerStorage *PeerStorage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	const batchSize = 100
+	query := dialogs.NewQueryBuilder(raw).GetDialogs()
+	// gotd's iterator otherwise requests again after exhausting a final page.
+	finalPageRemaining := -1
+	iter := dialogs.NewIterator(dialogs.QueryFunc(func(ctx context.Context, req dialogs.Request) (tg.MessagesDialogsClass, error) {
+		result, err := query.Query(ctx, req)
+		if err != nil {
+			return nil, err
 		}
-		for uid, user := range e.Entities.Users() {
-			peerStorage.AddPeer(uid, user.AccessHash, TypeUser, user.Username)
+		if page, ok := result.(*tg.MessagesDialogs); ok {
+			finalPageRemaining = len(page.Dialogs)
 		}
-		for gid := range e.Entities.Chats() {
-			peerStorage.AddPeer(gid, DefaultAccessHash, TypeChat, DefaultUsername)
+		// Persist the page once; each iterator element shares its entities.
+		if page, ok := result.AsModified(); ok {
+			for _, user := range page.GetUsers() {
+				if user, ok := user.AsNotEmpty(); ok && !user.Min {
+					if err := peerStorage.savePreloadedPeer(ctx, &Peer{ID: user.ID, AccessHash: user.AccessHash, Type: TypeUser.GetInt(), Username: user.Username}); err != nil {
+						return nil, err
+					}
+				}
+			}
+			for _, chat := range page.GetChats() {
+				var peer *Peer
+				switch chat := chat.(type) {
+				case *tg.Channel:
+					if !chat.Min {
+						peer = &Peer{ID: chat.ID, AccessHash: chat.AccessHash, Type: TypeChannel.GetInt(), Username: chat.Username}
+					}
+				case *tg.Chat:
+					peer = &Peer{ID: chat.ID, Type: TypeChat.GetInt()}
+				}
+				if peer != nil {
+					if err := peerStorage.savePreloadedPeer(ctx, peer); err != nil {
+						return nil, err
+					}
+				}
+			}
 		}
-		return nil
-	})
+		return result, nil
+	}), batchSize)
+	for iter.Next(ctx) {
+		if finalPageRemaining > 0 {
+			finalPageRemaining--
+			if finalPageRemaining == 0 {
+				break
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
