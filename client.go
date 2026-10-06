@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gotd/log"
+	"github.com/gotd/log/logzap"
 	tdsession "github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
@@ -258,6 +260,12 @@ func (c *Client) initTelegramClient(
 			LangCode:       c.ClientLangCode,
 		}
 	}
+
+	var gotdLogger log.Logger
+	if c.Logger != nil {
+		gotdLogger = logzap.New(c.Logger)
+	}
+
 	c.Client = telegram.NewClient(c.appId, c.apiHash, telegram.Options{
 		DCList:            c.DCList,
 		Resolver:          c.Resolver,
@@ -274,7 +282,7 @@ func (c *Client) initTelegramClient(
 		UpdateHandler:     c.Dispatcher,
 		NoUpdates:         c.NoUpdates,
 		SessionStorage:    c.sessionStorage,
-		Logger:            c.Logger,
+		Logger:            gotdLogger,
 		Device:            *device,
 		Middlewares:       middlewares,
 	})

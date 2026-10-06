@@ -121,7 +121,7 @@ func GetInputFileLocation(media tg.MessageMediaClass) (tg.InputFileLocationClass
 		if !ok {
 			return nil, mtp_errors.ErrUnknownTypeMedia
 		}
-		return f.AsInputDocumentFileLocation(), nil
+		return f.AsInputDocumentFileLocation(""), nil
 	case *tg.MessageMediaStory: // messageMediaStory#68cb6283
 		f, ok := v.Story.(*tg.StoryItem)
 		if !ok {
