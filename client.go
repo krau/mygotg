@@ -14,6 +14,7 @@ import (
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
 	"github.com/krau/mygotg/dispatcher"
 	intErrors "github.com/krau/mygotg/errors"
@@ -30,6 +31,10 @@ const VERSION = "v1.0.0-beta21"
 type Client struct {
 	// Dispatcher handlers the incoming updates and execute mapped handlers. It is recommended to use dispatcher.MakeDispatcher function for this field.
 	Dispatcher dispatcher.Dispatcher
+	// updateManager recovers missed updates (gaps) and hands updates to
+	// Dispatcher off the connection's read goroutine. It is nil when updates
+	// are disabled or recovery is turned off.
+	updateManager *updates.Manager
 	// PublicKeys of telegram.
 	//
 	// If not provided, embedded public keys will be used.
@@ -138,6 +143,17 @@ type ClientOpts struct {
 	ErrorHandler dispatcher.ErrorHandler
 	// Custom Middlewares
 	Middlewares []telegram.Middleware
+	// UpdateStateStorage persists the update manager state (pts/qts/seq and
+	// per-channel pts), so updates missed while the client was offline are
+	// recovered via updates.getDifference on the next start instead of being
+	// lost. In-memory storage is used if not provided.
+	UpdateStateStorage updates.StateStorage
+	// DisableUpdateRecovery turns off missed-update (gap) recovery.
+	//
+	// With it, updates are handled as-is and anything missed after a reconnect
+	// or an updatesTooLong is lost, which is the historic reason a long-running
+	// client silently stops responding. Only enable this for debugging.
+	DisableUpdateRecovery bool
 	// Custom Run() Middleware
 	// Can be used for floodWaiter package
 	// https://github.com/krau/mygotg/blob/beta/examples/middleware/main.go#L41
@@ -245,6 +261,19 @@ func NewClient(appId int, apiHash string, cType clientType, opts *ClientOpts) (*
 	return &c, c.Start(opts)
 }
 
+// updateHandler returns the telegram.UpdateHandler to register with gotd.
+//
+// When update recovery is enabled this is the update manager: it accepts the
+// update on the connection's read goroutine and processes it on its own worker,
+// so a blocking handler cannot stall the whole connection, and it recovers gaps
+// with updates.getDifference instead of silently dropping updates.
+func (c *Client) updateHandler() telegram.UpdateHandler {
+	if c.updateManager != nil {
+		return c.updateManager
+	}
+	return c.Dispatcher
+}
+
 func (c *Client) initTelegramClient(
 	device *telegram.DeviceConfig,
 	middlewares []telegram.Middleware,
@@ -271,7 +300,7 @@ func (c *Client) initTelegramClient(
 		ExchangeTimeout:   c.ExchangeTimeout,
 		DialTimeout:       c.DialTimeout,
 		CompressThreshold: c.CompressThreshold,
-		UpdateHandler:     c.Dispatcher,
+		UpdateHandler:     c.updateHandler(),
 		NoUpdates:         c.NoUpdates,
 		SessionStorage:    c.sessionStorage,
 		Logger:            c.Logger,
@@ -336,6 +365,21 @@ func (c *Client) initialize(wg *sync.WaitGroup) func(ctx context.Context) error 
 		c.Self = self
 
 		c.Dispatcher.Initialize(ctx, c.Stop, c.Client, self)
+
+		// Run update recovery on its own goroutine. Once started, the manager
+		// buffers updates on a separate worker instead of executing handlers on
+		// the connection's read goroutine, and resynchronizes via
+		// updates.getDifference after a gap.
+		if c.updateManager != nil {
+			go func() {
+				err := c.updateManager.Run(ctx, c.API(), self.ID, updates.AuthOptions{
+					IsBot: c.clientType.getType() != clientTypeVPhone,
+				})
+				if err != nil && ctx.Err() == nil && c.Logger != nil {
+					c.Logger.Error("Update manager stopped", zap.Error(err))
+				}
+			}()
+		}
 
 		c.PeerStorage.AddPeer(self.ID, self.AccessHash, storage.TypeUser, self.Username)
 		// notify channel that client is up
@@ -410,6 +454,14 @@ func (c *Client) Start(opts *ClientOpts) error {
 		c.ctx, c.cancel = context.WithCancel(context.Background())
 	}
 
+	c.updateManager = nil
+	if !opts.NoUpdates && !opts.DisableUpdateRecovery {
+		c.updateManager = updates.New(updates.Config{
+			Handler: c.Dispatcher,
+			Storage: opts.UpdateStateStorage,
+			Logger:  opts.Logger,
+		})
+	}
 	c.initTelegramClient(opts.Device, opts.Middlewares)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
