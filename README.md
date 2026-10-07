@@ -32,3 +32,5 @@ return client.Idle()
   share a recovery cursor between independent update consumers.
 - Omitting `DeferUpdateRecovery` keeps automatic recovery. Automatic initialization failures
   now return from `NewClient`/`Start` instead of leaving a client without working recovery.
+- Deferred startup captures the login-time update baseline, so `NewClient`/`Start` can also
+  return an initial-state fetch error before recovery is explicitly started.

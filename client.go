@@ -164,6 +164,7 @@ type ClientOpts struct {
 	DisableUpdateRecovery bool
 	// DeferUpdateRecovery buffers updates until StartUpdateRecovery is called after handler registration.
 	// No update cursor is persisted before recovery starts.
+	// Requires update recovery; use NoUpdates for clients that never consume updates.
 	DeferUpdateRecovery bool
 	// Custom Run() Middleware
 	// Can be used for floodWaiter package
@@ -434,6 +435,8 @@ func (c *Client) initialize(notifyStarted func(error), recovery *updateRecovery,
 // StartUpdateRecovery waits for recovery initialization after handlers have been registered.
 // The context limits this call; after success, recovery runs until the client stops.
 // Initialization failures leave recovery available for another start attempt.
+// It returns ErrClientNotReady for stopped/uninitialized clients, ErrUpdateRecoveryOff when disabled,
+// and ErrUpdateRecoveryStarted for an in-progress or completed start.
 func (c *Client) StartUpdateRecovery(ctx context.Context) error {
 	c.updateRecoveryMu.Lock()
 	if !c.running || c.runContext == nil || c.runContext.Err() != nil || c.ctx.Err() != nil {
