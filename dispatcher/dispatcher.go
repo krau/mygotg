@@ -52,6 +52,7 @@ type NativeDispatcher struct {
 	handlerGroups []int
 	pStorage      *storage.PeerStorage
 	initwg        sync.WaitGroup
+	initOnce      sync.Once
 }
 
 type PanicHandler func(*ext.Context, *ext.Update, string)
@@ -94,7 +95,7 @@ func (dp *NativeDispatcher) Initialize(ctx context.Context, cancel context.Cance
 	dp.sender = message.NewSender(dp.client)
 	dp.self = self
 	dp.cancel = cancel
-	dp.initwg.Done()
+	dp.initOnce.Do(dp.initwg.Done)
 }
 
 // Handle function handles all the incoming updates, map entities and dispatches updates for further handling.

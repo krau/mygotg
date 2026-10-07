@@ -37,7 +37,10 @@ type Client struct {
 	// updateManager recovers missed updates (gaps) and hands updates to
 	// Dispatcher off the connection's read goroutine. It is nil when updates
 	// are disabled or recovery is turned off.
-	updateManager *updates.Manager
+	updateManager    *updates.Manager
+	updateRecovery   *updateRecovery
+	updateRecoveryMu sync.Mutex
+	runContext       context.Context
 	// PublicKeys of telegram.
 	//
 	// If not provided, embedded public keys will be used.
@@ -159,6 +162,10 @@ type ClientOpts struct {
 	// or an updatesTooLong is lost, which is the historic reason a long-running
 	// client silently stops responding. Only enable this for debugging.
 	DisableUpdateRecovery bool
+	// DeferUpdateRecovery buffers updates until StartUpdateRecovery is called after handler registration.
+	// No update cursor is persisted before recovery starts.
+	// Requires update recovery; use NoUpdates for clients that never consume updates.
+	DeferUpdateRecovery bool
 	// Custom Run() Middleware
 	// Can be used for floodWaiter package
 	// https://github.com/krau/mygotg/blob/beta/examples/middleware/main.go#L41
@@ -270,15 +277,9 @@ func NewClient(appId int, apiHash string, cType clientType, opts *ClientOpts) (*
 	return &c, c.Start(opts)
 }
 
-// updateHandler returns the telegram.UpdateHandler to register with gotd.
-//
-// When update recovery is enabled this is the update manager: it accepts the
-// update on the connection's read goroutine and processes it on its own worker,
-// so a blocking handler cannot stall the whole connection, and it recovers gaps
-// with updates.getDifference instead of silently dropping updates.
 func (c *Client) updateHandler() telegram.UpdateHandler {
-	if c.updateManager != nil {
-		return c.updateManager
+	if c.updateRecovery != nil {
+		return c.updateRecovery
 	}
 	return c.Dispatcher
 }
@@ -379,7 +380,7 @@ Licensed under the terms of GNU General Public License v3
 	}
 }
 
-func (c *Client) initialize(notifyStarted func()) func(ctx context.Context) error {
+func (c *Client) initialize(notifyStarted func(error), recovery *updateRecovery, deferRecovery bool) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		err := c.login()
 		if err != nil {
@@ -394,27 +395,60 @@ func (c *Client) initialize(notifyStarted func()) func(ctx context.Context) erro
 
 		c.Dispatcher.Initialize(ctx, c.Stop, c.Client, self)
 
-		// Run update recovery on its own goroutine. Once started, the manager
-		// buffers updates on a separate worker instead of executing handlers on
-		// the connection's read goroutine, and resynchronizes via
-		// updates.getDifference after a gap.
-		if c.updateManager != nil {
-			go func() {
-				err := c.updateManager.Run(ctx, c.API(), self.ID, updates.AuthOptions{
-					IsBot: c.clientType.getType() != clientTypeVPhone,
-				})
-				if err != nil && ctx.Err() == nil && c.Logger != nil {
-					c.Logger.Error("Update manager stopped", zap.Error(err))
+		if recovery != nil {
+			var api updates.API = c.API()
+			if deferRecovery {
+				state, err := api.UpdatesGetState(ctx)
+				if err != nil {
+					return errors.Wrap(err, "get initial update state")
 				}
-			}()
+				api = recoveryAPI{API: api, initial: *state}
+			}
+			recovery.bind(ctx, api, self.ID, c.clientType.getType() != clientTypeVPhone)
+			defer recovery.stop()
+			if !deferRecovery {
+				if err := recovery.start(ctx); err != nil {
+					return errors.Wrap(err, "start update recovery")
+				}
+			}
 		}
 
 		c.PeerStorage.AddPeer(self.ID, self.AccessHash, storage.TypeUser, self.Username)
+		c.updateRecoveryMu.Lock()
 		c.running = true
-		notifyStarted()
-		<-c.ctx.Done()
-		return c.ctx.Err()
+		c.runContext = ctx
+		c.updateRecoveryMu.Unlock()
+		defer func() {
+			c.updateRecoveryMu.Lock()
+			if c.runContext == ctx {
+				c.runContext = nil
+				c.running = false
+			}
+			c.updateRecoveryMu.Unlock()
+		}()
+		notifyStarted(nil)
+		<-ctx.Done()
+		return ctx.Err()
 	}
+}
+
+// StartUpdateRecovery waits for recovery initialization after handlers have been registered.
+// The context limits this call; after success, recovery runs until the client stops.
+// Initialization failures leave recovery available for another start attempt.
+// It returns ErrClientNotReady for stopped/uninitialized clients, ErrUpdateRecoveryOff when disabled,
+// and ErrUpdateRecoveryStarted for an in-progress or completed start.
+func (c *Client) StartUpdateRecovery(ctx context.Context) error {
+	c.updateRecoveryMu.Lock()
+	if !c.running || c.runContext == nil || c.runContext.Err() != nil || c.ctx.Err() != nil {
+		c.updateRecoveryMu.Unlock()
+		return intErrors.ErrClientNotReady
+	}
+	recovery := c.updateRecovery
+	c.updateRecoveryMu.Unlock()
+	if recovery == nil {
+		return intErrors.ErrUpdateRecoveryOff
+	}
+	return recovery.start(ctx)
 }
 
 // ExportStringSession EncodeSessionToString encodes the client session to a string in base64.
@@ -436,6 +470,8 @@ func (c *Client) ExportStringSession() (string, error) {
 // Idle keeps the current goroutined blocked until the client is stopped.
 func (c *Client) Idle() error {
 	<-c.ctx.Done()
+	c.updateRecoveryMu.Lock()
+	defer c.updateRecoveryMu.Unlock()
 	return c.err
 }
 
@@ -467,21 +503,32 @@ func (c *Client) CreateContext() *ext.Context {
 // 2.) You can call Client.Start() to start the client again
 // if it was stopped using this method.
 func (c *Client) Stop() {
+	c.updateRecoveryMu.Lock()
 	c.cancel()
 	c.running = false
+	c.runContext = nil
+	c.updateRecoveryMu.Unlock()
 }
 
 // Start connects the client to telegram servers and logins.
 // It returns an error if already running or a synchronous peer preload fails; a failed preload stops the client.
 func (c *Client) Start(opts *ClientOpts) error {
+	c.updateRecoveryMu.Lock()
 	if c.running {
+		c.updateRecoveryMu.Unlock()
 		return intErrors.ErrClientAlreadyRunning
+	}
+	c.runContext = nil
+	c.updateRecoveryMu.Unlock()
+	if c.updateRecovery != nil {
+		c.updateRecovery.stop()
 	}
 	if c.ctx.Err() == context.Canceled {
 		c.ctx, c.cancel = context.WithCancel(context.Background())
 	}
 
 	c.updateManager = nil
+	c.updateRecovery = nil
 	if !opts.NoUpdates && !opts.DisableUpdateRecovery {
 		c.updateManager = updates.New(updates.Config{
 			Handler: c.Dispatcher,
@@ -493,31 +540,34 @@ func (c *Client) Start(opts *ClientOpts) error {
 			UserAccessHasher: storage.NewAccessHasher(c.PeerStorage),
 			Logger:           gotdLogger(opts.Logger),
 		})
+		c.updateRecovery = newUpdateRecovery(c.updateManager, c.ctx, func(err error) {
+			if c.Logger != nil {
+				c.Logger.Error("Update manager stopped", zap.Error(err))
+			}
+			c.Stop()
+		})
 	}
 	c.initTelegramClient(opts.Device, opts.Middlewares)
-	wg := sync.WaitGroup{}
-	wg.Add(1)
+	recovery := c.updateRecovery
+	runCtx := c.ctx
+	startup := make(chan error, 1)
 	started := sync.Once{}
-	notifyStarted := func() { started.Do(wg.Done) }
-	go func(c *Client) {
+	notifyStarted := func(err error) { started.Do(func() { startup <- err }) }
+	go func() {
+		var err error
 		if opts.RunMiddleware == nil {
-			c.err = c.Run(c.ctx, c.initialize(notifyStarted))
+			err = c.Run(runCtx, c.initialize(notifyStarted, recovery, opts.DeferUpdateRecovery))
 		} else {
-			c.err = opts.RunMiddleware(
-				c.Run,
-				c.ctx,
-				c.initialize(notifyStarted),
-			)
+			err = opts.RunMiddleware(c.Run, runCtx, c.initialize(notifyStarted, recovery, opts.DeferUpdateRecovery))
 		}
+		c.updateRecoveryMu.Lock()
+		c.err = err
+		c.updateRecoveryMu.Unlock()
+		notifyStarted(err)
+	}()
 
-		if c.err != nil {
-			notifyStarted()
-		}
-	}(c)
-
-	// wait till client starts
-	wg.Wait()
-	if c.err == nil {
+	err := <-startup
+	if err == nil {
 		if !c.Self.Bot && opts.PeersFromDialogs {
 			if opts.WaitOnPeersFromDialogs {
 				if err := storage.AddPeersFromDialogs(c.ctx, c.API(), c.PeerStorage); err != nil {
@@ -533,7 +583,7 @@ func (c *Client) Start(opts *ClientOpts) error {
 			}
 		}
 	}
-	return c.err
+	return err
 }
 
 func (c *Client) handlePeerPreloadError(opts *ClientOpts, err error) {

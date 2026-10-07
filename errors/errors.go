@@ -3,8 +3,11 @@ package errors
 import "errors"
 
 var (
-	ErrClientAlreadyRunning = errors.New("client is already running")
-	ErrSessionUnauthorized  = errors.New("session is unauthorized")
+	ErrClientAlreadyRunning  = errors.New("client is already running")
+	ErrSessionUnauthorized   = errors.New("session is unauthorized")
+	ErrClientNotReady        = errors.New("client is not ready")
+	ErrUpdateRecoveryOff     = errors.New("update recovery is disabled")
+	ErrUpdateRecoveryStarted = errors.New("update recovery already started")
 )
 
 var (
