@@ -71,7 +71,7 @@ func GetInputPeerClassFromId(p *storage.PeerStorage, iD int64) tg.InputPeerClass
 func SavePeersFromClassArray(p *storage.PeerStorage, cs []tg.ChatClass, us []tg.UserClass) {
 	for _, u := range us {
 		u, ok := u.(*tg.User)
-		if !ok {
+		if !ok || u.Min {
 			continue
 		}
 		p.AddPeer(u.ID, u.AccessHash, storage.TypeUser, u.Username)
@@ -79,6 +79,9 @@ func SavePeersFromClassArray(p *storage.PeerStorage, cs []tg.ChatClass, us []tg.
 	for _, c := range cs {
 		switch c := c.(type) {
 		case *tg.Channel:
+			if c.Min {
+				continue
+			}
 			p.AddPeer(c.ID, c.AccessHash, storage.TypeChannel, c.Username)
 		case *tg.Chat:
 			p.AddPeer(c.ID, storage.DefaultAccessHash, storage.TypeChat, storage.DefaultUsername)

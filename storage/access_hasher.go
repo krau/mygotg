@@ -33,8 +33,8 @@ func (h *AccessHasher) SetChannelAccessHash(ctx context.Context, _, channelID, a
 }
 
 // GetChannelAccessHash implements updates.ChannelAccessHasher.
-func (h *AccessHasher) GetChannelAccessHash(_ context.Context, _, channelID int64) (int64, bool, error) {
-	return h.lookup(channelID, TypeChannel)
+func (h *AccessHasher) GetChannelAccessHash(ctx context.Context, _, channelID int64) (int64, bool, error) {
+	return h.lookup(ctx, channelID, TypeChannel)
 }
 
 // SetUserAccessHash implements updates.UserAccessHasher.
@@ -43,25 +43,31 @@ func (h *AccessHasher) SetUserAccessHash(ctx context.Context, _, targetUserID, a
 }
 
 // GetUserAccessHash implements updates.UserAccessHasher.
-func (h *AccessHasher) GetUserAccessHash(_ context.Context, _, targetUserID int64) (int64, bool, error) {
-	return h.lookup(targetUserID, TypeUser)
+func (h *AccessHasher) GetUserAccessHash(ctx context.Context, _, targetUserID int64) (int64, bool, error) {
+	return h.lookup(ctx, targetUserID, TypeUser)
 }
 
-// upsert writes the hash without clearing the username the peer may already
-// have (AddPeer would overwrite it with an empty one).
+// upsert preserves the username atomically with the hash write.
 func (h *AccessHasher) upsert(ctx context.Context, id, accessHash int64, peerType EntityType) error {
+	h.peers.peerLock.Lock()
+	defer h.peers.peerLock.Unlock()
+	existing, found, err := h.peers.getPeerByIDTypeLocked(ctx, id, peerType)
+	if err != nil {
+		return err
+	}
 	peer := &Peer{ID: id, AccessHash: accessHash, Type: peerType.GetInt()}
-	if existing := h.peers.GetPeerByIdAndType(id, peerType); existing != nil && existing.ID == id {
+	if found {
 		peer.Username = existing.Username
 	}
-	return h.peers.savePreloadedPeer(ctx, peer)
+	return h.peers.savePeerLocked(ctx, peer)
 }
 
-// lookup reports the stored access hash. GetPeerByIdAndType returns an empty
-// peer when nothing is stored, so the zero ID is treated as "not found".
-func (h *AccessHasher) lookup(id int64, peerType EntityType) (int64, bool, error) {
-	peer := h.peers.GetPeerByIdAndType(id, peerType)
-	if peer == nil || peer.ID != id {
+func (h *AccessHasher) lookup(ctx context.Context, id int64, peerType EntityType) (int64, bool, error) {
+	peer, found, err := h.peers.getPeerByIDType(ctx, id, peerType)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found || peer.AccessHash == 0 {
 		return 0, false, nil
 	}
 	return peer.AccessHash, true, nil

@@ -12,10 +12,12 @@ import (
 )
 
 type PeerStorage struct {
-	peerCache  *cacher.Cacher[PeerKey, *Peer]
-	peerLock   sync.RWMutex
-	inMemory   bool
-	SqlSession *gorm.DB
+	peerCache *cacher.Cacher[PeerKey, *Peer]
+	peerLock  sync.RWMutex
+	// Pending write identities outlive cache eviction until saved or superseded.
+	pendingPeers map[PeerKey]*Peer
+	inMemory     bool
+	SqlSession   *gorm.DB
 }
 
 func NewPeerStorage(dialector gorm.Dialector, inMemory bool) *PeerStorage {
