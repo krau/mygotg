@@ -17,6 +17,8 @@ the fork lives in gotgproto's changelog. This file tracks changes made in this r
 - Public APIs and the peer database schema are unchanged; no database migration is required.
 - `AddPeer` still publishes peers before returning and saves asynchronously, but peer mutations
   can wait for a concurrent storage operation. Hash callers must handle returned storage errors.
+- Persistent peer cache entries use a fixed six-hour TTL instead of renewal on reads to avoid
+  a cache expiry race; expired entries reload from the database.
 
 ## v0.3.0 - 2026-10-06
 

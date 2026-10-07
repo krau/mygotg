@@ -28,10 +28,10 @@ func NewPeerStorage(dialector gorm.Dialector, inMemory bool) *PeerStorage {
 	if inMemory {
 		opts = nil
 	} else {
+		// Fixed TTL avoids cacher's unsynchronized expiry mutation on reads.
 		opts = &cacher.NewCacherOpts{
 			TimeToLive:    6 * time.Hour,
 			CleanInterval: 24 * time.Hour,
-			Revaluate:     true,
 		}
 		db, err := gorm.Open(dialector, &gorm.Config{
 			SkipDefaultTransaction: true,
