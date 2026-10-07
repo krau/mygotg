@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
+	"gorm.io/gorm"
 )
 
 // [TODO] bot api style peer id
@@ -39,25 +41,42 @@ const (
 	TypeChannel
 )
 
+// AddPeer publishes the peer before returning and persists it asynchronously.
 func (p *PeerStorage) AddPeer(iD, accessHash int64, peerType EntityType, userName string) {
 	peer := &Peer{ID: iD, AccessHash: accessHash, Type: peerType.GetInt(), Username: userName}
 	key := PeerKey{ID: iD, Type: peer.Type}
+	p.peerLock.Lock()
 	p.peerCache.Set(key, peer)
-	if p.inMemory {
-		return
+	if !p.inMemory {
+		if p.pendingPeers == nil {
+			p.pendingPeers = make(map[PeerKey]*Peer)
+		}
+		p.pendingPeers[key] = peer
 	}
-	go p.addPeerToDb(peer)
+	p.peerLock.Unlock()
+	if !p.inMemory {
+		go p.addPeerToDb(peer)
+	}
 }
 
 func (p *PeerStorage) addPeerToDb(peer *Peer) {
-	tx := p.SqlSession.Begin()
-	tx.Save(peer)
 	p.peerLock.Lock()
 	defer p.peerLock.Unlock()
-	tx.Commit()
+	key := PeerKey{ID: peer.ID, Type: peer.Type}
+	if p.pendingPeers[key] != peer {
+		return
+	}
+	p.SqlSession.Save(peer)
+	delete(p.pendingPeers, key)
 }
 
 func (p *PeerStorage) savePreloadedPeer(ctx context.Context, peer *Peer) error {
+	p.peerLock.Lock()
+	defer p.peerLock.Unlock()
+	return p.savePeerLocked(ctx, peer)
+}
+
+func (p *PeerStorage) savePeerLocked(ctx context.Context, peer *Peer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -66,38 +85,36 @@ func (p *PeerStorage) savePreloadedPeer(ctx context.Context, peer *Peer) error {
 			return err
 		}
 	}
-	p.peerCache.Set(PeerKey{ID: peer.ID, Type: peer.Type}, peer)
+	key := PeerKey{ID: peer.ID, Type: peer.Type}
+	delete(p.pendingPeers, key)
+	p.peerCache.Set(key, peer)
 	return nil
 }
 
 // GetPeerById finds the provided id in the peer storage and return it if found.
 func (p *PeerStorage) GetPeerById(iD int64) *Peer {
-	peer, ok := p.getCachedPeerByID(iD)
-	if p.inMemory {
-		if !ok {
+	if peer, ok := p.getCachedPeerByID(iD); ok {
+		return peer
+	}
+	p.peerLock.Lock()
+	defer p.peerLock.Unlock()
+	for _, peerType := range peerTypeLookupOrder() {
+		peer, found, err := p.getPeerByIDTypeLocked(context.Background(), iD, peerType)
+		if err != nil {
 			return &Peer{}
 		}
-	} else {
-		if !ok {
-			return p.cachePeersByID(iD)
+		if found {
+			return peer
 		}
 	}
-	return peer
+	return &Peer{}
 }
 
 // GetPeerByIdAndType finds the provided id and type in the peer storage and returns it if found.
 func (p *PeerStorage) GetPeerByIdAndType(iD int64, peerType EntityType) *Peer {
-	key := PeerKey{ID: iD, Type: peerType.GetInt()}
-	peer, ok := p.peerCache.Get(key)
-	if p.inMemory {
-		if !ok {
-			return &Peer{}
-		}
-		return peer
-	}
-	if !ok {
-		peer, _ := p.cachePeerByIDType(iD, peerType)
-		return peer
+	peer, found, _ := p.getPeerByIDType(context.Background(), iD, peerType)
+	if !found {
+		return &Peer{}
 	}
 	return peer
 }
@@ -128,25 +145,44 @@ func (p *PeerStorage) GetInputPeerByUsername(userName string) tg.InputPeerClass 
 	return getInputPeerFromStoragePeer(p.GetPeerByUsername(userName))
 }
 
-func (p *PeerStorage) cachePeersByID(id int64) *Peer {
-	for _, peerType := range peerTypeLookupOrder() {
-		peer, ok := p.cachePeerByIDType(id, peerType)
-		if ok {
-			return peer
-		}
+// Cache misses share the mutation lock so an older DB read cannot replace a newer cached peer.
+func (p *PeerStorage) getPeerByIDType(ctx context.Context, id int64, peerType EntityType) (*Peer, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
 	}
-	return &Peer{}
+	if peer, ok := p.peerCache.Get(PeerKey{ID: id, Type: peerType.GetInt()}); ok {
+		return peer, true, nil
+	}
+	p.peerLock.Lock()
+	defer p.peerLock.Unlock()
+	return p.getPeerByIDTypeLocked(ctx, id, peerType)
 }
 
-func (p *PeerStorage) cachePeerByIDType(id int64, peerType EntityType) (*Peer, bool) {
-	var peer Peer
-	result := p.SqlSession.Where("id = ? AND type = ?", id, peerType.GetInt()).First(&peer)
-	if result.Error != nil || result.RowsAffected == 0 {
-		return &Peer{}, false
+func (p *PeerStorage) getPeerByIDTypeLocked(ctx context.Context, id int64, peerType EntityType) (*Peer, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
 	}
-	key := PeerKey{ID: peer.ID, Type: peer.Type}
+	key := PeerKey{ID: id, Type: peerType.GetInt()}
+	if peer, ok := p.peerCache.Get(key); ok {
+		return peer, true, nil
+	}
+	if peer := p.pendingPeers[key]; peer != nil {
+		p.peerCache.Set(key, peer)
+		return peer, true, nil
+	}
+	if p.inMemory {
+		return nil, false, nil
+	}
+	var peer Peer
+	err := p.SqlSession.WithContext(ctx).Where("id = ? AND type = ?", id, peerType.GetInt()).First(&peer).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
 	p.peerCache.Set(key, &peer)
-	return &peer, true
+	return &peer, true, nil
 }
 
 func (p *PeerStorage) getCachedPeerByID(id int64) (*Peer, bool) {
