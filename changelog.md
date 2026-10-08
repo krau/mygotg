@@ -3,6 +3,21 @@
 mygotg is derived from [gotgproto](https://github.com/celestix/gotgproto); the history up to
 the fork lives in gotgproto's changelog. This file tracks changes made in this repository.
 
+## v0.5.0 - 2026-10-08
+
+### Added
+
+- `Context.ResolveInputPeerById` and `Context.ResolvePeerById` resolve peers missing from the
+  peer storage over the network: channels via `channels.getChannels` and users via
+  `users.getUsers` with a zero access hash, chats are assumed to exist. Both plain peer ids and
+  Bot API style marked ids (`-100<channel>`, `-<chat>`) are accepted.
+
+### Changed
+
+- Find and send helpers (`GetChat`, `GetUser`, `BanChatMember`, `ForwardMessages`, `SendMessage`,
+  `EditMessage`, …) resolve unknown peers with the new resolver instead of failing immediately
+  or sending a nil peer.
+
 ## v0.4.0 - 2026-10-07
 
 ### Added
