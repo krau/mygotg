@@ -147,7 +147,6 @@ func (dp *NativeDispatcher) handleUpdate(ctx context.Context, e tg.Entities, upd
 	u := ext.GetNewUpdate(ctx, dp.client, dp.self.ID, dp.pStorage, &e, update)
 	dp.handleUpdateRepliedToMessage(u, ctx)
 	c := ext.NewContext(ctx, dp.client, dp.pStorage, dp.self, dp.sender, &e, dp.setReply)
-	var err error
 	defer func() {
 		if r := recover(); r != nil {
 			errorStack := fmt.Sprintf("%s\n", r) + string(debug.Stack())
@@ -159,32 +158,29 @@ func (dp *NativeDispatcher) handleUpdate(ctx context.Context, e tg.Entities, upd
 			}
 		}
 	}()
+groups:
 	for _, group := range dp.handlerGroups {
 		for _, handler := range dp.handlerMap[group] {
-			err = handler.CheckUpdate(c, u)
-			if err == nil || errors.Is(err, ContinueGroups) {
+			err := handler.CheckUpdate(c, u)
+			if err != nil && !errors.Is(err, ContinueGroups) && !errors.Is(err, EndGroups) && !errors.Is(err, SkipCurrentGroup) && !errors.Is(err, StopClient) {
+				err = dp.Error(c, u, err.Error())
+			}
+			switch {
+			case err == nil, errors.Is(err, ContinueGroups):
 				continue
-			} else if errors.Is(err, EndGroups) {
-				return err
-			} else if errors.Is(err, SkipCurrentGroup) {
-				break
-			} else if errors.Is(err, StopClient) {
+			case errors.Is(err, EndGroups):
+				return nil
+			case errors.Is(err, SkipCurrentGroup):
+				continue groups
+			case errors.Is(err, StopClient):
 				dp.cancel()
 				return nil
-			} else {
-				err = dp.Error(c, u, err.Error())
-				switch err {
-				case ContinueGroups:
-					continue
-				case EndGroups:
-					return err
-				case SkipCurrentGroup:
-					break
-				}
+			default:
+				return err
 			}
 		}
 	}
-	return err
+	return nil
 }
 
 func (dp *NativeDispatcher) handleUpdateRepliedToMessage(u *ext.Update, ctx context.Context) {
