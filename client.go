@@ -396,7 +396,9 @@ func (c *Client) initialize(notifyStarted func(error), recovery *updateRecovery,
 		c.Dispatcher.Initialize(ctx, c.Stop, c.Client, self)
 
 		if recovery != nil {
-			var api updates.API = c.API()
+			var api updates.API = channelRecoveryAPI{
+				API: c.API(), hasher: storage.NewAccessHasher(c.PeerStorage), selfID: self.ID, logger: c.Logger,
+			}
 			if deferRecovery {
 				state, err := api.UpdatesGetState(ctx)
 				if err != nil {

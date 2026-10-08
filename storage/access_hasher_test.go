@@ -627,3 +627,41 @@ func TestAccessHasherCancellationDuringLookup(t *testing.T) {
 		})
 	}
 }
+
+func TestAccessHasherInvalidationPreservesNewerMetadata(t *testing.T) {
+	for _, inMemory := range []bool{true, false} {
+		t.Run(fmt.Sprintf("inMemory=%t", inMemory), func(t *testing.T) {
+			ctx := context.Background()
+			peers := preloadStorage(t, inMemory)
+			hasher := NewAccessHasher(peers)
+			if err := peers.savePreloadedPeer(ctx, &Peer{ID: 777, Type: TypeChannel.GetInt(), AccessHash: 100, Username: "synthetic"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := hasher.InvalidateChannelAccessHash(ctx, 777, 100); err != nil {
+				t.Fatal(err)
+			}
+			if hash, found, err := hasher.GetChannelAccessHash(ctx, 1, 777); err != nil || found || hash != 0 {
+				t.Fatalf("rejected credentials still known: %d %t %v", hash, found, err)
+			}
+			if err := hasher.SetChannelAccessHash(ctx, 1, 777, 200); err != nil {
+				t.Fatal(err)
+			}
+			if err := hasher.InvalidateChannelAccessHash(ctx, 777, 100); err != nil {
+				t.Fatal(err)
+			}
+			want := Peer{ID: 777, Type: TypeChannel.GetInt(), AccessHash: 200, Username: "synthetic"}
+			if got := *peers.GetPeerByIdAndType(777, TypeChannel); got != want {
+				t.Fatalf("late rejection lost metadata: %+v, want %+v", got, want)
+			}
+			if !inMemory {
+				var persisted Peer
+				if err := peers.SqlSession.Where("id = ? AND type = ?", 777, TypeChannel).First(&persisted).Error; err != nil {
+					t.Fatal(err)
+				}
+				if persisted != want {
+					t.Fatalf("persistent metadata = %+v, want %+v", persisted, want)
+				}
+			}
+		})
+	}
+}

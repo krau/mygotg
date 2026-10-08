@@ -37,6 +37,22 @@ func (h *AccessHasher) GetChannelAccessHash(ctx context.Context, _, channelID in
 	return h.lookup(ctx, channelID, TypeChannel)
 }
 
+// InvalidateChannelAccessHash clears a rejected hash without discarding newer metadata or the username.
+func (h *AccessHasher) InvalidateChannelAccessHash(ctx context.Context, channelID, rejectedHash int64) error {
+	h.peers.peerLock.Lock()
+	defer h.peers.peerLock.Unlock()
+	peer, found, err := h.peers.getPeerByIDTypeLocked(ctx, channelID, TypeChannel)
+	if err != nil {
+		return err
+	}
+	if !found || peer.AccessHash != rejectedHash {
+		return nil
+	}
+	invalidated := *peer
+	invalidated.AccessHash = 0
+	return h.peers.savePeerLocked(ctx, &invalidated)
+}
+
 // SetUserAccessHash implements updates.UserAccessHasher.
 func (h *AccessHasher) SetUserAccessHash(ctx context.Context, _, targetUserID, accessHash int64) error {
 	return h.upsert(ctx, targetUserID, accessHash, TypeUser)
